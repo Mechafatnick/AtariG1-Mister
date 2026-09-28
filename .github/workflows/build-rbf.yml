@@ -1,0 +1,95 @@
+# Builds the MiSTer RBF in the cloud — no local Quartus needed.
+# Push (or press "Run workflow" in the Actions tab) → download the RBF
+# from the run's Artifacts.
+#
+# ACTION VERSIONS: checkout@v5+ and upload-artifact@v6+ are the first
+# majors that declare `using: node24` (upload-artifact@v5 is still
+# node20, so bumping only to v5 would NOT clear the deprecation
+# warning). Verified against each tag's action.yml.
+#
+# DESIGN NOTE: the Quartus image is Debian Stretch (glibc 2.24), which is
+# too old to run modern Node runtimes. So we do NOT use `container:` —
+# checkout and
+# artifact upload run on the modern ubuntu-latest host, and only the
+# compile step runs inside the container via `docker run`. This avoids
+# the "GLIBC_2.28 not found" class of failures entirely.
+#
+# Image: raetro/quartus:mister is the project alias pinned to Quartus
+# 17.0 for the Cyclone V SE 5CSEBA6U23I7 (the DE10-Nano part).
+# Mirror if Docker Hub rate-limits you: ghcr.io/raetro/quartus:17.0
+name: Build RBF
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      # The Quartus image is large (~6 GB compressed). Reclaim space the
+      # hosted runner wastes on toolchains we don't use.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost \
+                      /usr/local/lib/android "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      # Fail fast with a clear message if the IP files never reached the
+      # repo — otherwise Quartus reports it obliquely as
+      # 'undefined entity "pll"' 50 seconds into synthesis.
+      - name: Verify project files
+        run: |
+          echo "--- repo root ---";      ls -la
+          echo "--- rtl/ ---";           ls -la rtl/
+          echo "--- rtl/pll/ ---";       ls -la rtl/pll/ || echo "MISSING rtl/pll/"
+          echo "--- files.qip ---";      cat files.qip
+          missing=0
+          for f in rtl/pll.qip rtl/pll.v rtl/pll/pll_0002.qip rtl/pll/pll_0002.v; do
+            if [ -f "$f" ]; then echo "OK      $f"
+            else echo "MISSING $f"; missing=1; fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo
+            echo "::error::PLL IP files are absent from the repository."
+            echo "Re-upload the project so that rtl/pll.qip, rtl/pll.v and the"
+            echo "rtl/pll/ subfolder are all present, then re-run."
+            exit 1
+          fi
+
+      - name: Pull Quartus image
+        run: docker pull raetro/quartus:mister
+
+      - name: Run compilation flow
+        run: |
+          docker run --rm -v "${{ github.workspace }}":/build \
+            raetro/quartus:mister \
+            quartus_sh --flow compile Arcade-AtariG1.qpf
+
+      - name: Collect RBF
+        run: |
+          mkdir -p release
+          sudo chown -R "$(id -u):$(id -g)" output_files || true
+          cp output_files/*.rbf "release/AtariG1_$(date +%Y%m%d).rbf"
+          ls -la release/
+
+      - name: Upload RBF
+        uses: actions/upload-artifact@v6
+        with:
+          name: AtariG1-rbf
+          path: release/
+
+      # Reports are useful on success (resource usage, timing) and
+      # essential on failure.
+      - name: Upload Quartus reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: quartus-reports
+          path: |
+            output_files/*.rpt
+            output_files/*.summary
+          if-no-files-found: ignore

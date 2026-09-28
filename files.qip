@@ -1,0 +1,11 @@
+# Core PLL (Intel altera_pll IP, Cyclone V, 50 MHz ref).
+# Every MiSTer core must supply its own rtl/pll.qip — the Template ships
+# the `pll` instantiation but not the generated IP, which is why a stock
+# template build fails with "undefined entity pll".
+set_global_assignment -name QIP_FILE rtl/pll.qip
+
+set_global_assignment -name SDC_FILE Arcade-AtariG1.sdc
+set_global_assignment -name SYSTEMVERILOG_FILE Arcade-AtariG1.sv
+
+# The core's own sources (and the vendored CPU / sound chip cores)
+set_global_assignment -name QIP_FILE rtl/atarig1.qip
